@@ -18,6 +18,9 @@ fi
 echo "Unzipping..."
 unzip -qo master.zip
 
+#transrate en2ja
+perl ./tools/json_translate.pl ./Cataclysm-DDA-master
+
 # download php dependencies
 php composer.phar -d=src install
 php src/artisan cataclysm:rebuild Cataclysm-DDA-master
