@@ -376,6 +376,11 @@ class Item implements Robbo\Presenter\PresentableInterface
         return count($this->flags)>0;
     }
 
+    public function getHasTechniques()
+    {
+        return count($this->techniques)>0;
+    }
+
     public function getDamagePerMove()
     {
         if(!$this->movesPerAttack)
@@ -387,6 +392,32 @@ class Item implements Robbo\Presenter\PresentableInterface
     public function getIsModdable()
     {
         return count($this->valid_mod_locations)>0;
+    }
+
+    public function getIsBrewable()
+    {
+        return isset($this->data->brewable);
+    }
+
+    public function getBrewable()
+    {
+        $brewtime = $this->data->brewable->time;
+        $brewtimestring = "1 minute";
+        if ($brewtime >= 1000) {
+            $brewtimestring = number_format($brewtime / 600, 2)." hours";
+        } else {
+            $brewtimestring = ($brewtime / 10)." minutes";
+        }
+
+        $brewresults = array();
+        foreach ($this->data->brewable->results as $output) {
+            $brewitem = $this->repo->getModel("Item", $output);
+            $brewresults[] = link_to_route("item.view", $brewitem->name, array("id" => $brewitem->id));
+        }
+
+        $brewproducts = implode(", ", $brewresults);
+
+        return "Fermenting this item for " . $brewtimestring . " produces " . $brewproducts . ".";
     }
 
     public function getIsGunMod()
@@ -418,7 +449,7 @@ class Item implements Robbo\Presenter\PresentableInterface
 
     public function getContains()
     {
-        return $this->data->contains/4.0;
+        return $this->data->contains/1.0;
     }
 
     public function getConstructionUses()

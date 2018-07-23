@@ -2,6 +2,7 @@
 namespace Repositories\Indexers;
 
 use Repositories\RepositoryWriterInterface;
+use CustomUtility\ValueUtil;
 
 class Item implements IndexerInterface
 {
@@ -15,7 +16,7 @@ class Item implements IndexerInterface
         $this->types = array_flip(array(
             "AMMO", "GUN", "ARMOR", "TOOL", "TOOL_ARMOR", "BOOK", "COMESTIBLE",
             "CONTAINER", "GUNMOD", "GENERIC", "BIONIC_ITEM", "VAR_VEH_PART",
-            "_SPECIAL", "MAGAZINE",
+            "_SPECIAL", "MAGAZINE", "WHEEL", "TOOLMOD", "ENGINE",
         ));
 
         $this->book_types = array(
@@ -57,35 +58,41 @@ class Item implements IndexerInterface
 
     public function onFinishedLoading(RepositoryWriterInterface $repo)
     {
+        $starttime = microtime(true);
         foreach ($repo->raw(self::DEFAULT_INDEX) as $id) {
             $recipes = count($repo->raw("item.toolFor.$id"));
-            if($recipes>0)
+            if ($recipes>0) {
                 $repo->set("item.count.$id.toolFor", $recipes);
+            }
 
             $recipes = count($repo->raw("item.recipes.$id"));
-            if($recipes>0)
+            if ($recipes>0) {
                 $repo->set("item.count.$id.recipes", $recipes);
+            }
 
             $recipes = count($repo->raw("item.learn.$id"));
-            if($recipes>0)
+            if ($recipes>0) {
                 $repo->set("item.count.$id.learn", $recipes);
+            }
 
             $recipes = count($repo->raw("item.disassembly.$id"));
-            if($recipes>0)
+            if ($recipes>0) {
                 $repo->set("item.count.$id.disassembly", $recipes);
+            }
 
             $recipes = count($repo->raw("item.disassembledFrom.$id"));
-            if($recipes>0)
+            if ($recipes>0) {
                 $repo->set("item.count.$id.disassembledFrom", $recipes);
+            }
 
             $count = count($repo->raw("construction.$id"));
-            if($count>0) {
+            if ($count>0) {
                 $repo->set("item.count.$id.construction", $count);
             }
 
             // sort item recipes, by difficulty
             $categories = $repo->raw("item.categories.$id");
-            foreach($categories as $category) {
+            foreach ($categories as $category) {
                 $recipes = $repo->raw("item.toolForCategory.$id.$category");
                 usort($recipes, function ($a, $b) use ($repo) {
                     $a = $repo->get("recipe.$a");
@@ -103,22 +110,90 @@ class Item implements IndexerInterface
         $repo->sort("gunSkills");
         $repo->sort("bookSkills");
         $repo->sort("consumableTypes");
+
+        $timediff = microtime(true) - $starttime;
+        print "Item post-processing $timediff s.\n";
     }
 
     public function onNewObject(RepositoryWriterInterface $repo, $object)
     {
         // only index objects with valid item types.
+        // if (!isset($this->types[$object->type])) {
+        //     if (isset($object->id)) {
+        //         print "[Item?] ".$object->id." is not in the type list.\n";
+        //         if (isset($object->type)) {
+        //             print $object->type."\n";
+        //         }
+        //     }
+        //     return;
+        // }
         if (!isset($this->types[$object->type]) || !isset($object->id)) {
             return;
         }
 
-        $repo->append(self::DEFAULT_INDEX,  $object->id);
+        $repo->append(self::DEFAULT_INDEX, $object->id);
         $repo->set(self::DEFAULT_INDEX.".".$object->id, $object->repo_id);
 
         // nearby fire and integrated toolset are "virtual" items
         // they don't have anything special.
-        if ($object->type == "_SPECIAL") {
+        // also exclude abstract objects
+        if ($object->type == "_SPECIAL" || array_key_exists("abstract", $object)) {
             return;
+        }
+
+        ValueUtil::SetDefault($object, "reload", 100);
+        if ($object->type == "BOOK") {
+            ValueUtil::SetDefault($object, "skill", "none");
+            ValueUtil::SetDefault($object, "required_level", 0);
+        }
+        if ($object->type == "GUN") {
+            ValueUtil::SetDefault($object, "skill", "none");
+            ValueUtil::SetDefault($object, "ranged_damage", 0);
+            ValueUtil::SetDefault($object, "range", 0);
+            ValueUtil::SetDefault($object, "recoil", 0);
+            ValueUtil::SetDefault($object, "dispersion", 120);
+            ValueUtil::SetDefault($object, "burst", 0);
+        }
+        if ($object->type == "GUNMOD") {
+            ValueUtil::SetDefault($object, "location", "unknown");
+            ValueUtil::SetDefault($object, "mod_targets", array("unknown_target"));
+        }
+        if ($object->type == "AMMO") {
+            ValueUtil::SetDefault($object, "damage", 0);
+            ValueUtil::SetDefault($object, "recoil", 0);
+            ValueUtil::SetDefault($object, "loudness", 0);
+            ValueUtil::SetDefault($object, "price", 0);
+            ValueUtil::SetDefault($object, "pierce", 0);
+            ValueUtil::SetDefault($object, "dispersion", 0);
+            ValueUtil::SetDefault($object, "count", 1);
+        }
+        if ($object->type == "COMESTIBLE") {
+            ValueUtil::SetDefault($object, "comestible_type", "None");
+            ValueUtil::SetDefault($object, "phase", "solid");
+            ValueUtil::SetDefault($object, "quench", 0);
+            ValueUtil::SetDefault($object, "fun", 0);
+            ValueUtil::SetDefault($object, "healthy", 0);
+            ValueUtil::SetDefault($object, "addiction_potential", 0);
+            ValueUtil::SetDefault($object, "charges", 1);
+            ValueUtil::SetDefault($object, "nutrition", 0);
+        }
+
+        // handle properties that are modified by addition/multiplication
+        // the property is removed after application, since each template reference can have its own modifiers
+        if (isset($object->relative)) {
+            foreach ($object->relative as $relkey => $relvalue) {
+                if(isset($object->{$relkey}))
+                $object->{$relkey} += $relvalue;
+            }
+            unset($object->relative);
+        }
+
+        if (isset($object->proportional)) {
+            foreach ($object->proportional as $proportionkey => $proportionvalue) {
+                if (is_array($object->{$proportionkey})) continue;
+                $object->{$proportionkey} = floor($object->{$proportionkey} * $proportionvalue);
+            }
+            unset($object->proportional);
         }
 
         // items with enough damage might be good melee weapons.
@@ -126,7 +201,8 @@ class Item implements IndexerInterface
             $repo->append("melee", $object->id);
         }
 
-	$is_armor = in_array($object->type, ["ARMOR", "TOOL_ARMOR"]);
+        $is_armor = in_array($object->type, ["ARMOR", "TOOL_ARMOR"]);
+
         // create an index with armor for each body part they cover.
         if ($is_armor and !isset($object->covers)) {
             $repo->append("armor.none", $object->id);
@@ -148,6 +224,11 @@ class Item implements IndexerInterface
             $repo->append("tool", $object->id);
         }
 
+        //apply substitution saving
+        if (isset($object->sub)) {
+            $repo->add_substitute($object->id, $object->sub);
+        }
+
         // save books per skill
         if ($object->type == "BOOK") {
             if (isset($this->book_types[$object->skill])) {
@@ -160,7 +241,12 @@ class Item implements IndexerInterface
         }
 
         if ($object->type == "GUN") {
-            if(!isset($object->skill)) $object->skill = "none";
+            if (is_object($object->ranged_damage)) {
+                $object->ranged_damage = "N/A";
+            }
+            if (!isset($object->skill)) {
+                $object->skill = "none";
+            }
             $repo->append("gun.$object->skill", $object->id);
             $repo->addUnique("gunSkills", $object->skill);
         }
@@ -174,15 +260,39 @@ class Item implements IndexerInterface
         }
 
         if ($object->type == "AMMO") {
-            if(isset($object->ammo_type)) { 
-                $repo->append("ammo.$object->ammo_type", $object->id);
+            if (isset($object->ammo_type)) {
+                // some ammunition has multiple types
+                if (is_array($object->ammo_type)) {
+                    foreach ($object->ammo_type as $minitype) {
+                        $repo->append("ammo.$minitype", $object->id);
+                    }
+                } else {
+                    $repo->append("ammo.$object->ammo_type", $object->id);
+                }
             }
         }
+
         if ($object->type == "COMESTIBLE") {
+            //if (!array_key_exists("comestible_type", $object)) {
+                //print "comestible_type missing: ".$object->id."\n";
+                //$object->comestible_type = "N/A";
+            //}
+
+            if (isset($object->calories)) {
+                $object->nutrition = floor($object->calories/2500.0*288.0);
+            }
+
             $type = strtolower($object->comestible_type);
-            $repo->append("consumables.$type", $object->id);
-            $repo->addUnique("consumableTypes", $type);
+
+            if (isset($object->brewable)) {
+                $repo->append("consumables.fermentable", $object->id);
+                $repo->addUnique("consumableTypes", "fermentable");
+            } else {
+                $repo->append("consumables.$type", $object->id);
+                $repo->addUnique("consumableTypes", $type);
+            }
         }
+
         if (isset($object->qualities)) {
             foreach ($object->qualities as $quality) {
                 $repo->append("quality.$quality[0]", $object->id);
@@ -192,7 +302,7 @@ class Item implements IndexerInterface
         if (isset($object->material)) {
             $materials = (array) $object->material;
             $repo->append("material.$materials[0]", $object->id);
-            if(count($object->material)>1 and $materials[1]!="null") {
+            if (count($object->material)>1 and $materials[1]!="null") {
                 $repo->append("material.$materials[1]", $object->id);
             }
         }
@@ -204,5 +314,6 @@ class Item implements IndexerInterface
                 $repo->addUnique("flags", $flag);
             }
         }
+
     }
 }
